@@ -1,9 +1,9 @@
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-import folium
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score
+from sklearn.ensemble import RandomForestRegressor
+import folium
 from streamlit_folium import st_folium
 import pandas as pd
 import numpy as np
@@ -11,6 +11,7 @@ from analysis import (
     load_data, get_kpis, worst_areas, worst_roads, congestion_by_area,
     weather_impact, day_patterns, monthly_trend, roadwork_impact,
     correlation_data, map_data, generate_insights, train_model, predict_congestion,
+    route_recommendation, detect_anomalies,
     AREA_COORDS
 )
 
@@ -191,8 +192,8 @@ for col, label, value, sub in cards:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📊 Overview", "🗺️ Live Map", "🔥 Deep Analysis", "🤖 Predict", "💡 Insights", "🧪 Model Testing", "📅 Year-over-Year", "⚖️ Area Compare"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    "📊 Overview", "🗺️ Live Map", "🔥 Deep Analysis", "🤖 Predict", "💡 Insights", "🧪 Model Testing", "📅 Year-over-Year", "⚖️ Area Compare", "🗺️ Route Recommender", "🚨 Anomaly Detection"
 ])
 
 PLOT_THEME = dict(
@@ -831,3 +832,163 @@ with tab8:
         Drivers in {area_a} average <b>{spd_a:.1f} km/h</b> vs <b>{spd_b:.1f} km/h</b> in {area_b}.
     </div>
     """, unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 9 — ROUTE RECOMMENDER
+# ══════════════════════════════════════════════════════════════════════════════
+with tab9:
+    st.markdown('<div class="section-title">🗺️ Route Recommender</div>', unsafe_allow_html=True)
+    st.markdown("<small style='color:#666'>Pick origin and destination → get the best day to travel based on historical patterns</small><br>", unsafe_allow_html=True)
+
+    all_areas = sorted(df_full["Area Name"].unique())
+    col1, col2 = st.columns(2)
+    with col1:
+        origin = st.selectbox("📍 Origin", all_areas, index=all_areas.index("Koramangala"), key="route_orig")
+    with col2:
+        destination = st.selectbox("🏁 Destination", all_areas, index=all_areas.index("Whitefield"), key="route_dest")
+
+    if origin == destination:
+        st.warning("Please select two different areas.")
+    else:
+        best_day, worst_day, best_val, worst_val, combined, per_day = route_recommendation(df_full, origin, destination)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f'<div class="kpi-card"><div class="kpi-label">Best Day to Travel</div><div class="kpi-value" style="color:#00d084">{best_day}</div><div class="kpi-sub">lowest combined congestion</div></div>', unsafe_allow_html=True)
+        c2.markdown(f'<div class="kpi-card"><div class="kpi-label">Expected Congestion</div><div class="kpi-value" style="color:#00d084">{best_val}%</div><div class="kpi-sub">on best day</div></div>', unsafe_allow_html=True)
+        c3.markdown(f'<div class="kpi-card"><div class="kpi-label">Worst Day to Travel</div><div class="kpi-value" style="color:#ff4b4b">{worst_day}</div><div class="kpi-sub">highest combined congestion</div></div>', unsafe_allow_html=True)
+        c4.markdown(f'<div class="kpi-card"><div class="kpi-label">Expected Congestion</div><div class="kpi-value" style="color:#ff4b4b">{worst_val}%</div><div class="kpi-sub">on worst day</div></div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Combined congestion by day
+        st.markdown(f'<div class="section-title">📊 Combined Congestion: {origin} → {destination}</div>', unsafe_allow_html=True)
+        colors = ["#00d084" if d == best_day else "#ff4b4b" if d == worst_day else "#4cc9f0" for d in combined["Day"]]
+        fig_route = px.bar(combined, x="Day", y="Avg Congestion",
+                           color="Avg Congestion", color_continuous_scale="RdYlGn_r",
+                           text="Avg Congestion")
+        fig_route.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        fig_route.update_layout(**PLOT_THEME, height=380)
+        st.plotly_chart(fig_route, width='stretch')
+
+        # Per area breakdown
+        st.markdown('<div class="section-title">🔍 Congestion Breakdown per Area</div>', unsafe_allow_html=True)
+        per_day_melted = per_day.melt(id_vars="Day", var_name="Area", value_name="Congestion Level")
+        fig_breakdown = px.bar(per_day_melted, x="Day", y="Congestion Level",
+                               color="Area", barmode="group",
+                               color_discrete_map={origin: "#ff4b4b", destination: "#4cc9f0"})
+        fig_breakdown.update_layout(**PLOT_THEME, height=360)
+        st.plotly_chart(fig_breakdown, width='stretch')
+
+        # Verdict
+        saving = worst_val - best_val
+        st.markdown(f"""
+        <div class="insight-card" style="margin-top:1rem">
+            ✅ <b>Recommendation:</b> Travel from <b>{origin}</b> to <b>{destination}</b> on
+            <b style="color:#00d084">{best_day}</b> for the smoothest journey ({best_val}% avg congestion).
+            Avoid <b style="color:#ff4b4b">{worst_day}</b> — congestion is <b>{saving:.1f} percentage points higher</b>.
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — ANOMALY DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
+with tab10:
+    st.markdown('<div class="section-title">🚨 Traffic Anomaly Detection</div>', unsafe_allow_html=True)
+    st.markdown("<small style='color:#666'>Days where traffic was significantly higher than normal — possible incidents, events, or crises</small><br>", unsafe_allow_html=True)
+
+    col1, col2 = st.columns([3,1])
+    with col2:
+        z_thresh = st.slider("Sensitivity (Z-score threshold)", 1.5, 4.0, 2.0, 0.1,
+                             help="Lower = more anomalies detected. Higher = only extreme outliers.")
+    with col1:
+        st.markdown(f"<small style='color:#888'>Z-score ≥ {z_thresh} means traffic was that many standard deviations above the normal for that area+day combination</small>", unsafe_allow_html=True)
+
+    anomalies = detect_anomalies(df_full, z_threshold=z_thresh)
+
+    # KPIs
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Anomalies</div><div class="kpi-value" style="color:#ff4b4b">{len(anomalies)}</div><div class="kpi-sub">unusual traffic days</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="kpi-card"><div class="kpi-label">Worst Z-Score</div><div class="kpi-value" style="color:#ff4b4b">{anomalies["z_score"].max():.1f}σ</div><div class="kpi-sub">most extreme outlier</div></div>', unsafe_allow_html=True)
+    top_area = anomalies["Area Name"].value_counts().idxmax()
+    c3.markdown(f'<div class="kpi-card"><div class="kpi-label">Most Affected Area</div><div class="kpi-value" style="color:#ff8c00" style="font-size:1.2rem">{top_area}</div><div class="kpi-sub">most anomalies</div></div>', unsafe_allow_html=True)
+    avg_excess = anomalies["excess_pct"].mean()
+    c4.markdown(f'<div class="kpi-card"><div class="kpi-label">Avg Excess Traffic</div><div class="kpi-value" style="color:#ff8c00">+{avg_excess:.0f}%</div><div class="kpi-sub">above normal</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Anomalies over time
+    st.markdown('<div class="section-title">📈 Anomalies Over Time</div>', unsafe_allow_html=True)
+    anom_timeline = anomalies.groupby("Date").size().reset_index(name="Count")
+    anom_timeline["Date"] = pd.to_datetime(anom_timeline["Date"])
+    fig_timeline = px.scatter(anom_timeline, x="Date", y="Count",
+                              size="Count", color="Count",
+                              color_continuous_scale="Reds")
+    fig_timeline.update_layout(**PLOT_THEME, height=350)
+    st.plotly_chart(fig_timeline, width='stretch')
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Anomalies by area
+        st.markdown('<div class="section-title">🏙️ Anomalies by Area</div>', unsafe_allow_html=True)
+        area_counts = anomalies["Area Name"].value_counts().reset_index()
+        area_counts.columns = ["Area Name", "Anomaly Count"]
+        fig_area = px.bar(area_counts, x="Anomaly Count", y="Area Name",
+                          orientation="h", color="Anomaly Count",
+                          color_continuous_scale="Reds")
+        fig_area.update_layout(**PLOT_THEME_NO_YAXIS, height=380,
+                                yaxis=dict(autorange="reversed", gridcolor="#1e2235", linecolor="#2e3250"))
+        st.plotly_chart(fig_area, width='stretch')
+
+    with col2:
+        # Anomalies by day of week
+        st.markdown('<div class="section-title">📅 Anomalies by Day of Week</div>', unsafe_allow_html=True)
+        day_counts = anomalies["Area Name"].copy()
+        anomalies2 = anomalies.copy()
+        anomalies2["DayName"] = pd.to_datetime(anomalies2["Date"]).dt.day_name()
+        day_order = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+        day_anom = anomalies2["DayName"].value_counts().reindex(day_order).fillna(0).reset_index()
+        day_anom.columns = ["Day","Count"]
+        fig_day = px.bar(day_anom, x="Day", y="Count",
+                         color="Count", color_continuous_scale="Oranges")
+        fig_day.update_layout(**PLOT_THEME, height=380)
+        st.plotly_chart(fig_day, width='stretch')
+
+    # Top anomalies table
+    st.markdown('<div class="section-title">🔍 Top 20 Most Extreme Anomalies</div>', unsafe_allow_html=True)
+    top_anom = anomalies.head(20).copy()
+    top_anom["Date"] = pd.to_datetime(top_anom["Date"]).dt.strftime("%d %b %Y")
+    top_anom["z_score"] = top_anom["z_score"].round(2)
+    top_anom["excess_pct"] = top_anom["excess_pct"].apply(lambda x: f"+{x:.0f}%")
+    top_anom["Traffic Volume"] = top_anom["Traffic Volume"].apply(lambda x: f"{int(x):,}")
+    top_anom["expected_vol"] = top_anom["expected_vol"].apply(lambda x: f"{int(x):,}")
+    top_anom = top_anom.rename(columns={
+        "Date":"Date", "Area Name":"Area", "Road/Intersection Name":"Road",
+        "Traffic Volume":"Actual Volume", "expected_vol":"Expected Volume",
+        "z_score":"Z-Score", "excess_pct":"Excess %",
+        "Weather Conditions":"Weather", "Roadwork and Construction Activity":"Roadwork",
+        "Congestion Level":"Congestion %"
+    })
+    st.dataframe(top_anom[["Date","Area","Road","Actual Volume","Expected Volume",
+                            "Z-Score","Excess %","Weather","Roadwork"]],
+                 hide_index=True, use_container_width=False)
+
+    st.markdown(f"""
+    <div class="insight-card" style="margin-top:1rem">
+        🚨 <b>What this means:</b> These are days where traffic was <b>statistically unusual</b> —
+        likely caused by local events, accidents, strikes, or infrastructure failures.
+        <b>{top_area}</b> has the most anomalous days, suggesting it is the most unpredictable corridor in Bangalore.
+        The worst single event had <b>{anomalies['excess_pct'].max():.0f}% more traffic</b> than normal for that area and day.
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<hr style='border-color:#1e2235;margin-top:3rem'>
+<div style='text-align:center;color:#333;font-size:0.8rem;padding:1rem'>
+    Bangalore Traffic Analyzer · Built with Streamlit & Python · Data: 2022–2026
+</div>
+""", unsafe_allow_html=True)

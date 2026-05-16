@@ -4,10 +4,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
-import pickle
-import os
 
-# ── Area coordinates for Folium map ──────────────────────────────────────────
 AREA_COORDS = {
     "Indiranagar":     (12.9784, 77.6408),
     "Whitefield":      (12.9698, 77.7499),
@@ -35,7 +32,6 @@ def load_data(path="data/Banglore_traffic_Dataset.csv"):
     df["Roadwork_bin"] = (df["Roadwork and Construction Activity"] == "Yes").astype(int)
     return df
 
-# ── KPIs ─────────────────────────────────────────────────────────────────────
 def get_kpis(df):
     return {
         "avg_volume":     int(df["Traffic Volume"].mean()),
@@ -46,7 +42,6 @@ def get_kpis(df):
         "total_incidents":int(df["Incident Reports"].sum()),
     }
 
-# ── Chart data ────────────────────────────────────────────────────────────────
 def worst_areas(df):
     return df.groupby("Area Name")["Traffic Volume"].mean().sort_values(ascending=False).reset_index()
 
@@ -85,34 +80,32 @@ def correlation_data(df):
 
 def map_data(df):
     area_stats = df.groupby("Area Name").agg(
-        avg_volume   =("Traffic Volume",   "mean"),
-        avg_congestion=("Congestion Level","mean"),
-        avg_speed    =("Average Speed",    "mean"),
-        incidents    =("Incident Reports", "sum"),
+        avg_volume    =("Traffic Volume",   "mean"),
+        avg_congestion=("Congestion Level", "mean"),
+        avg_speed     =("Average Speed",    "mean"),
+        incidents     =("Incident Reports", "sum"),
     ).reset_index()
     area_stats["lat"] = area_stats["Area Name"].map(lambda x: AREA_COORDS.get(x,(12.97,77.59))[0])
     area_stats["lon"] = area_stats["Area Name"].map(lambda x: AREA_COORDS.get(x,(12.97,77.59))[1])
     return area_stats
 
-# ── Auto-generated insights ───────────────────────────────────────────────────
 def generate_insights(df):
     insights = []
     area_vol  = df.groupby("Area Name")["Traffic Volume"].mean()
     city_avg  = area_vol.mean()
     worst     = area_vol.idxmax()
     ratio     = area_vol.max() / city_avg
-
     insights.append(f"🔴 **{worst}** has {ratio:.1f}x higher traffic than the city average.")
 
-    day_vol = df.groupby("Day")["Traffic Volume"].mean()
-    busiest = day_vol.idxmax()
-    quietest= day_vol.idxmin()
+    day_vol  = df.groupby("Day")["Traffic Volume"].mean()
+    busiest  = day_vol.idxmax()
+    quietest = day_vol.idxmin()
     insights.append(f"📅 **{busiest}** is the busiest day; **{quietest}** is the quietest — a {((day_vol.max()-day_vol.min())/day_vol.min()*100):.0f}% swing.")
 
-    rain_vol = df[df["Weather Conditions"]=="Rain"]["Traffic Volume"].mean()
-    clear_vol= df[df["Weather Conditions"]=="Clear"]["Traffic Volume"].mean()
-    diff     = ((rain_vol - clear_vol)/clear_vol*100)
-    direction= "higher" if diff > 0 else "lower"
+    rain_vol  = df[df["Weather Conditions"]=="Rain"]["Traffic Volume"].mean()
+    clear_vol = df[df["Weather Conditions"]=="Clear"]["Traffic Volume"].mean()
+    diff      = ((rain_vol - clear_vol)/clear_vol*100)
+    direction = "higher" if diff > 0 else "lower"
     insights.append(f"🌧️ Rain causes **{abs(diff):.1f}% {direction}** traffic volume compared to clear weather.")
 
     rw_yes = df[df["Roadwork and Construction Activity"]=="Yes"]["Congestion Level"].mean()
@@ -127,7 +120,6 @@ def generate_insights(df):
 
     return insights
 
-# ── ML Model ──────────────────────────────────────────────────────────────────
 def train_model(df):
     le_area    = LabelEncoder()
     le_weather = LabelEncoder()
@@ -156,14 +148,54 @@ def predict_congestion(model, le_area, le_weather, le_road, features,
                         area, weather, road, day_num, month_num,
                         roadwork, traffic_vol, avg_speed):
     row = {
-        "area_enc":    le_area.transform([area])[0],
-        "weather_enc": le_weather.transform([weather])[0],
-        "road_enc":    le_road.transform([road])[0],
-        "DayNum":      day_num,
-        "MonthNum":    month_num,
-        "Roadwork_bin":int(roadwork),
+        "area_enc":       le_area.transform([area])[0],
+        "weather_enc":    le_weather.transform([weather])[0],
+        "road_enc":       le_road.transform([road])[0],
+        "DayNum":         day_num,
+        "MonthNum":       month_num,
+        "Roadwork_bin":   int(roadwork),
         "Traffic Volume": traffic_vol,
         "Average Speed":  avg_speed,
     }
     X = pd.DataFrame([row])[features]
     return round(float(model.predict(X)[0]), 1)
+
+# ── Route Recommender ─────────────────────────────────────────────────────────
+def route_recommendation(df, origin, destination):
+    """Returns best/worst day to travel + per-day congestion for both areas."""
+    days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+
+    orig_day = df[df["Area Name"]==origin].groupby("Day")["Congestion Level"].mean().reindex(days)
+    dest_day = df[df["Area Name"]==destination].groupby("Day")["Congestion Level"].mean().reindex(days)
+    combined = ((orig_day + dest_day) / 2).reset_index()
+    combined.columns = ["Day","Avg Congestion"]
+
+    best_day  = combined.loc[combined["Avg Congestion"].idxmin(), "Day"]
+    worst_day = combined.loc[combined["Avg Congestion"].idxmax(), "Day"]
+    best_val  = combined["Avg Congestion"].min()
+    worst_val = combined["Avg Congestion"].max()
+
+    orig_reset = orig_day.reset_index()
+    orig_reset.columns = ["Day", origin]
+    dest_reset = dest_day.reset_index()
+    dest_reset.columns = ["Day", destination]
+    per_day = orig_reset.merge(dest_reset, on="Day")
+
+    return best_day, worst_day, round(best_val,1), round(worst_val,1), combined, per_day
+
+# ── Anomaly Detection ─────────────────────────────────────────────────────────
+def detect_anomalies(df, z_threshold=2.0):
+    """Flag dates where traffic volume is z_threshold std devs above area+day mean."""
+    df2 = df.copy()
+    grp = df2.groupby(["Area Name","Day"])["Traffic Volume"]
+    df2["expected_vol"] = grp.transform("mean")
+    df2["vol_std"]      = grp.transform("std").fillna(1)
+    df2["z_score"]      = (df2["Traffic Volume"] - df2["expected_vol"]) / df2["vol_std"]
+    anomalies = df2[df2["z_score"] >= z_threshold].copy()
+    anomalies["excess_pct"] = ((anomalies["Traffic Volume"] - anomalies["expected_vol"]) /
+                                anomalies["expected_vol"] * 100).round(1)
+    anomalies = anomalies.sort_values("z_score", ascending=False)
+    return anomalies[["Date","Area Name","Road/Intersection Name",
+                       "Traffic Volume","expected_vol","z_score",
+                       "excess_pct","Weather Conditions",
+                       "Roadwork and Construction Activity","Congestion Level"]]
